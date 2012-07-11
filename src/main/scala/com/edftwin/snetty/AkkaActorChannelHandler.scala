@@ -1,46 +1,54 @@
 package com.edftwin.snetty
 
-import akka.actor.{Actor, ActorRef}
+import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 
 import org.jboss.netty.channel.{
   ChannelHandlerContext, MessageEvent, Channels,
   SimpleChannelHandler, DownstreamMessageEvent}
 
 case class AkkaChannelWrite[V](
-     data: V
-  )(
-    implicit val ctx: ChannelHandlerContext,
-    val e: MessageEvent
-  )
+   data: V
+)(
+  implicit val ctx: ChannelHandlerContext,
+  val e: MessageEvent
+)
 
-  case class AkkaChannelRead[T](
-     data: T
-  )(
-    implicit val ctx: ChannelHandlerContext,
-    val e: MessageEvent
-  ) {
-    def toWrite[V](writeData: V) = AkkaChannelWrite[V](writeData)(ctx,e)
-  }
+case class AkkaChannelRead[T](
+   data: T
+)(
+  implicit val ctx: ChannelHandlerContext,
+  val e: MessageEvent
+) {
+  def toWrite[V](writeData: V) = AkkaChannelWrite[V](writeData)(ctx,e)
+}
+
+
 
 class AkkaActorChannelHandler[T,V](
+  system: ActorSystem,
   getActor: () => ActorRef
-) extends SimpleChannelHandler with Actor {
+) extends SimpleChannelHandler {
 
-  
-
-  def receive = {
-    case write: AkkaChannelWrite[V] =>
-      val channel = write.e.getChannel
-      val channelFuture = Channels.future(channel)
-      val responseEvent = new DownstreamMessageEvent(
-        channel, channelFuture, write.data, channel.getRemoteAddress
-      )
-      write.ctx.sendDownstream(responseEvent)
+  class AkkaChannelHandlerActor[T,V](
+    readHandlingActor: ActorRef
+  ) extends Actor {
+    def receive = {
+      case read:  AkkaChannelRead[T] =>
+        readHandlingActor ! read
+      case write: AkkaChannelWrite[V] =>
+        val channel = write.e.getChannel
+        val channelFuture = Channels.future(channel)
+        val responseEvent = new DownstreamMessageEvent(
+          channel, channelFuture, write.data, channel.getRemoteAddress
+        )
+        write.ctx.sendDownstream(responseEvent)
+    }
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, e: MessageEvent) {
-    val actor = getActor()
-    actor ! AkkaChannelRead[T](e.getMessage.asInstanceOf[T])(ctx, e)
+    val readHandlingActor = getActor()
+    val akkaChannelHandlerActor = system.actorOf(Props(new AkkaChannelHandlerActor[T,V](readHandlingActor)))
+    akkaChannelHandlerActor ! AkkaChannelRead[T](e.getMessage.asInstanceOf[T])(ctx, e)
     super.messageReceived(ctx, e)
   }
 }
